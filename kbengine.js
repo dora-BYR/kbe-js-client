@@ -106,6 +106,8 @@ KBEngine.MESSAGE_MAX_SIZE		 = 65535;
 KBEngine.CLIENT_NO_FLOAT		 = 0;
 KBEngine.KBE_FLT_MAX			 = 3.402823466e+38;
 
+KBEngine.allModules 			 = {}; //适配组件
+
 /*-----------------------------------------------------------------------------------------
 												number64bits
 -----------------------------------------------------------------------------------------*/
@@ -1822,7 +1824,8 @@ KBEngine.Entity = KBEngine.Class.extend(
 		}
 		
 		var method = KBEngine.moduledefs[this.className].cell_methods[arguments[0]];
-		
+		KBEngine.ERROR_MSG('KBEngine.Entity::cellCall:info: className=', this.className, "arguments[0]=", arguments[0],
+		"method=", method);
 		if(method == undefined)
 		{
 			KBEngine.ERROR_MSG("KBEngine.Entity::cellCall: The server did not find the def_method(" + this.className + "." + arguments[0] + ")!");
@@ -1937,6 +1940,299 @@ KBEngine.Entity = KBEngine.Class.extend(
 	
 	set_direction : function(old)
 	{
+		// KBEngine.DEBUG_MSG(this.className + "::set_direction: " + old);  
+		KBEngine.Event.fire(KBEngine.EventTypes.set_direction, this);
+	}
+});
+
+//适配组件
+/*-----------------------------------------------------------------------------------------
+												Component
+-----------------------------------------------------------------------------------------*/
+KBEngine.Component = KBEngine.Class.extend(
+{
+	ctor: function (className) {
+		this.owner = null;
+		this.name = ""; // 绑定变量名称
+		this.entityComponentPropertyID = 0;  // 组件id
+		this.className = className || "";  // 类名
+		this.position = new KBEngine.Vector3(0.0, 0.0, 0.0);
+		this.direction = new KBEngine.Vector3(0.0, 0.0, 0.0);
+		this.velocity = 0.0
+
+		this.cell = null;
+		this.base = null;
+
+		// enterworld之后设置为true
+		this.inWorld = false;
+
+		// __init__调用之后设置为true
+		this.inited = false;
+
+		// 是否被控制
+		this.isControlled = false;
+
+		this.entityLastLocalPos = new KBEngine.Vector3(0.0, 0.0, 0.0);
+		this.entityLastLocalDir = new KBEngine.Vector3(0.0, 0.0, 0.0);
+
+		// 玩家是否在地面上
+		this.isOnGround = false;
+
+		return true;
+	},
+
+	// 与服务端实体脚本中__init__类似, 代表初始化实体
+	__init__: function (entity, varName) {
+		this.name = varName;
+		this.onAttached(entity);
+	},
+
+	onAttached: function(entity) {
+		let saveData = KBEngine.moduledefs[entity.className]["propertys"];
+		saveData = saveData[this.name];
+		this.entityComponentPropertyID = saveData[0]; // 组件id
+		this.owner = entity;
+		this.base = this._getBase();
+		this.cell = this._getCell();
+	},
+
+	onDetached: function() {
+		this.owner = null;
+		this.entityComponentPropertyID = 0;
+		this.base = null;
+		this.cell = null;
+		this.name = "";
+	},
+
+	_getBase() {
+		return this.owner && this.owner.base;
+	},
+
+	_getCell() {
+		return this.owner && this.owner.cell;
+	},
+
+	callPropertysSetMethods: function () {
+		var currModule = KBEngine.moduledefs[this.className];
+		for (var name in currModule.propertys) {
+			var propertydata = currModule.propertys[name];
+			var properUtype = propertydata[0];
+			var name = propertydata[2];
+			var setmethod = propertydata[5];
+			var flags = propertydata[6];
+			var oldval = this[name];
+
+			if (setmethod != null) {
+				// base类属性或者进入世界后cell类属性会触发set_*方法
+				// ED_FLAG_BASE_AND_CLIENT、ED_FLAG_BASE
+				if (flags == 0x00000020 || flags == 0x00000040) {
+					if (this.inited && !this.inWorld)
+						setmethod.call(this, oldval);
+				}
+				else {
+					if (this.inWorld) {
+						if (flags == 0x00000008 || flags == 0x00000010) {
+							if (!this.isPlayer())
+								continue;
+						}
+
+						setmethod.call(this, oldval);
+					}
+				}
+			}
+		};
+	},
+
+	onDestroy: function () {
+	},
+
+	onControlled: function (bIsControlled) {
+	},
+
+	isPlayer: function () {
+		// return this.entityComponentPropertyID == KBEngine.app.entity_id;
+		return KBEngine.app.entity_id == this.owner.id;
+	},
+
+	baseCall: function () {
+		this.base = this.base || this._getBase();
+		if (!this.base) {
+			KBEngine.ERROR_MSG('KBEngine.Component::baseCall: base is null!');
+			return;
+		}
+		if (arguments.length < 1) {
+			KBEngine.ERROR_MSG('KBEngine.Component::baseCall: not fount interfaceName!');
+			return;
+		}
+
+		if (this.base == undefined) {
+			KBEngine.ERROR_MSG('KBEngine.EnComponenttity::baseCall: base is None!');
+			return;
+		}
+
+		var method = KBEngine.moduledefs[this.className].base_methods[arguments[0]];
+
+		if (method == undefined) {
+			KBEngine.ERROR_MSG("KBEngine.Component::baseCall: The server did not find the def_method(" + this.className + "." + arguments[0] + ")!");
+			return;
+		}
+
+		var methodID = method[0];
+		var args = method[3];
+
+		if (arguments.length - 1 != args.length) {
+			KBEngine.ERROR_MSG("KBEngine.Component::baseCall: args(" + (arguments.length - 1) + "!= " + args.length + ") size is error!");
+			return;
+		}
+
+		this.base.newCall();
+		// if (this.base.bundle == null)
+		// 	this.base.bundle = KBEngine.Bundle.createObject();
+
+		// if (this.base.type == KBEngine.ENTITYCALL_TYPE_CELL)
+		// 	this.base.bundle.newMessage(KBEngine.messages.Baseapp_onRemoteCallCellMethodFromClient);
+		// else
+		// 	this.base.bundle.newMessage(KBEngine.messages.Entity_onRemoteMethodCall);
+		// this.base.bundle.writeInt32(this.id);
+
+		// 这里需要检查，写入的Uint16可能是组件Utype
+		this.base.bundle.writeUint16(this.entityComponentPropertyID);
+		this.base.bundle.writeUint16(methodID);
+
+		try {
+			for (var i = 0; i < args.length; i++) {
+				if (args[i].isSameType(arguments[i + 1])) {
+					args[i].addToStream(this.base.bundle, arguments[i + 1]);
+				}
+				else {
+					throw new Error("KBEngine.Component::baseCall: arg[" + i + "] is error!");
+				}
+			}
+		}
+		catch (e) {
+			KBEngine.ERROR_MSG(e.toString());
+			KBEngine.ERROR_MSG('KBEngine.Component::baseCall: args is error!');
+			this.base.bundle = null;
+			return;
+		}
+
+		this.base.sendCall();
+	},
+
+	cellCall: function () {
+		this.cell = this.cell || this._getCell();
+		if (!this.cell) {
+			KBEngine.ERROR_MSG('KBEngine.Component::baseCall: cell is null!');
+			return;
+		}
+		if (arguments.length < 1) {
+			KBEngine.ERROR_MSG('KBEngine.Component::cellCall: not fount interfaceName!');
+			return;
+		}
+
+		if (this.cell == undefined) {
+			KBEngine.ERROR_MSG('KBEngine.Component::cellCall: cell is None!');
+			return;
+		}
+
+		var method = KBEngine.moduledefs[this.className].cell_methods[arguments[0]];
+		// KBEngine.ERROR_MSG('KBEngine.Component::cellCall:info: className=', this.className, "arguments[0]=", arguments[0], "method=", method);
+		if (method == undefined) {
+			KBEngine.ERROR_MSG("KBEngine.Component::cellCall: The server did not find the def_method(" + this.className + "." + arguments[0] + ")!");
+			return;
+		}
+
+		var methodID = method[0];
+		var args = method[3];
+
+		if (arguments.length - 1 != args.length) {
+			KBEngine.ERROR_MSG("KBEngine.Component::cellCall: args(" + (arguments.length - 1) + "!= " + args.length + ") size is error!");
+			return;
+		}
+
+		this.cell.newCall();
+		this.cell.bundle.writeUint16(this.entityComponentPropertyID);
+		this.cell.bundle.writeUint16(methodID);
+
+		try {
+			for (var i = 0; i < args.length; i++) {
+				if (args[i].isSameType(arguments[i + 1])) {
+					args[i].addToStream(this.cell.bundle, arguments[i + 1]);
+				}
+				else {
+					throw new Error("KBEngine.Component::cellCall: arg[" + i + "] is error!");
+				}
+			}
+		}
+		catch (e) {
+			KBEngine.ERROR_MSG(e.toString());
+			KBEngine.ERROR_MSG('KBEngine.Component::cellCall: args is error!');
+			this.cell.bundle = null;
+			return;
+		}
+
+		this.cell.sendCall();
+	},
+
+	enterWorld: function () {
+		KBEngine.INFO_MSG(this.className + '::enterWorld: ' + this.entityComponentPropertyID);
+		this.inWorld = true;
+		this.onEnterWorld();
+
+		KBEngine.Event.fire(KBEngine.EventTypes.onEnterWorld, this);
+	},
+
+	onEnterWorld: function () {
+	},
+
+	leaveWorld: function () {
+		KBEngine.INFO_MSG(this.className + '::leaveWorld: ' + this.entityComponentPropertyID);
+		this.inWorld = false;
+		this.onLeaveWorld();
+		KBEngine.Event.fire(KBEngine.EventTypes.onLeaveWorld, this);
+	},
+
+	onLeaveWorld: function () {
+	},
+
+	enterSpace: function () {
+		KBEngine.INFO_MSG(this.className + '::enterSpace: ' + this.entityComponentPropertyID);
+		this.onEnterSpace();
+		KBEngine.Event.fire(KBEngine.EventTypes.onEnterSpace, this);
+
+		// 要立即刷新表现层对象的位置
+		KBEngine.Event.fire(KBEngine.EventTypes.set_position, this);
+		KBEngine.Event.fire(KBEngine.EventTypes.set_direction, this);
+	},
+
+	onEnterSpace: function () {
+	},
+
+	leaveSpace: function () {
+		KBEngine.INFO_MSG(this.className + '::leaveSpace: ' + this.entityComponentPropertyID);
+		this.onLeaveSpace();
+		KBEngine.Event.fire("onLeaveSpace", this);
+	},
+
+	onLeaveSpace: function () {
+	},
+
+	set_position: function (old) {
+		// KBEngine.DEBUG_MSG(this.className + "::set_position: " + old);  
+
+		if (this.isPlayer()) {
+			KBEngine.app.entityServerPos.x = this.position.x;
+			KBEngine.app.entityServerPos.y = this.position.y;
+			KBEngine.app.entityServerPos.z = this.position.z;
+		}
+
+		KBEngine.Event.fire(KBEngine.EventTypes.set_position, this);
+	},
+
+	onUpdateVolatileData: function () {
+	},
+
+	set_direction: function (old) {
 		// KBEngine.DEBUG_MSG(this.className + "::set_direction: " + old);  
 		KBEngine.Event.fire(KBEngine.EventTypes.set_direction, this);
 	}
@@ -3721,7 +4017,8 @@ KBEngine.KBEngineApp = function(kbengineArgs)
 			var self_base_methods = currModuleDefs["base_methods"];
 			var self_cell_methods = currModuleDefs["cell_methods"];
 			
-			var Class = KBEngine[scriptmodule_name];
+			// var Class = KBEngine[scriptmodule_name];
+			var Class = KBEngine.allModules[scriptmodule_name];
 			
 			while(propertysize > 0)
 			{
@@ -3745,18 +4042,31 @@ KBEngine.KBEngineApp = function(kbengineArgs)
 				var savedata = [properUtype, aliasID, name, defaultValStr, utype, setmethod, properFlags];
 				self_propertys[name] = savedata;
 				
-				if(aliasID != -1)
-				{
+				// if(aliasID != -1)
+				// {
+				// 	self_propertys[aliasID] = savedata;
+				// 	currModuleDefs["usePropertyDescrAlias"] = true;
+				// }
+				// else
+				// {
+				// 	self_propertys[properUtype] = savedata;
+				// 	currModuleDefs["usePropertyDescrAlias"] = false;
+				// }
+				//适配组件：在服务器组件的Utype设定值在[1000, 2000]范围内
+				if (properUtype >= 1000 && properUtype <= 2000) {
 					self_propertys[aliasID] = savedata;
-					currModuleDefs["usePropertyDescrAlias"] = true;
-				}
-				else
-				{
-					self_propertys[properUtype] = savedata;
-					currModuleDefs["usePropertyDescrAlias"] = false;
+				} else {
+					if (aliasID != -1) {
+						self_propertys[aliasID] = savedata;
+						currModuleDefs["usePropertyDescrAlias"] = true;
+					}
+					else {
+						self_propertys[properUtype] = savedata;
+						currModuleDefs["usePropertyDescrAlias"] = false;
+					}
 				}
 				
-				KBEngine.INFO_MSG("KBEngineApp::Client_onImportClientEntityDef: add(" + scriptmodule_name + "), property(" + name + "/" + properUtype + ").");
+				KBEngine.INFO_MSG("KBEngineApp::Client_onImportClientEntityDef: add(" + scriptmodule_name + "), property(" + name + "/" + properUtype + ").", savedata);
 			};
 			
 			while(methodsize > 0)
@@ -3832,7 +4142,8 @@ KBEngine.KBEngineApp = function(kbengineArgs)
 				KBEngine.INFO_MSG("KBEngineApp::Client_onImportClientEntityDef: add(" + scriptmodule_name + "), cell_method(" + name + ").");
 			};
 			
-			var defmethod = KBEngine[scriptmodule_name];
+			// var defmethod = KBEngine[scriptmodule_name];
+			var defmethod = KBEngine.allModules[scriptmodule_name];
 
 			if(defmethod == undefined)
 			{
@@ -3848,7 +4159,7 @@ KBEngine.KBEngineApp = function(kbengineArgs)
 				var defaultValStr = infos[3];
 				var utype = infos[4];
 
-				if(defmethod != undefined)
+				if(defmethod != undefined && utype != undefined)
 					defmethod.prototype[name] = utype.parseDefaultValStr(defaultValStr);
 			};
 
@@ -4291,16 +4602,18 @@ KBEngine.KBEngineApp = function(kbengineArgs)
 		var runclass = KBEngine.app.entityclass[entityType];
 		if(runclass == undefined)
 		{
-			runclass = KBEngine[entityType];
-			if(runclass == undefined)
+			// runclass = KBEngine[entityType];
+			runclass = KBEngine.allModules[entityType];
+			if(runclass)
 			{
-				KBEngine.ERROR_MSG("KBEngineApp::getentityclass: entityType(" + entityType + ") is error!");
-				return runclass;
-			}
-			else
 				KBEngine.app.entityclass[entityType] = runclass;
+			}
 		}
-
+		if(runclass == undefined){
+			KBEngine.ERROR_MSG("KBEngineApp::getentityclass: entityType(" + entityType + ") is error!");
+		}else {
+			KBEngine.DEBUG_MSG("KBEngineApp::getentityclass: ok. entityType=", entityType);
+		}
 		return runclass;
 	}
 	
@@ -4340,8 +4653,13 @@ KBEngine.KBEngineApp = function(kbengineArgs)
 			entity.__init__();
 			entity.inited = true;
 			
-			if(KBEngine.app.args.isOnInitCallPropertysSetMethods)
+			if(KBEngine.app.args.isOnInitCallPropertysSetMethods) {
 				entity.callPropertysSetMethods();
+			}
+			//组件适配：设置组件
+			if (entity.attachComponents) {
+				entity.attachComponents(KBEngine.moduledefs[entity.className])
+			}
 		}
 		else
 		{
@@ -4450,25 +4768,33 @@ KBEngine.KBEngineApp = function(kbengineArgs)
 			if (_t_utype != 0) {
 				if (_t_child_utype != 0) {
 					//更新组件属性
-					var comPropertyData = pdatas[_t_utype]
+					var comPropertyData = pdatas[_t_utype];
 					if (comPropertyData !== undefined) {
-						var comObj = entity[comPropertyData[2]]
-						var className = comObj["className"]
-						var componentPData = KBEngine.moduledefs[className].propertys[_t_child_utype]
-						var setmethod = componentPData[5]
-						var name = componentPData[2]
-						var flags = componentPData[6]
-						var val = componentPData[4].createFromStream(stream);
-						var oldval = comObj[name]
-						comObj[name] = val
-						if (setmethod != null) {
-							setmethod.call(comObj, oldval)
-						} else {
-							KBEngine.ERROR_MSG("组件：" + className + "不存在set方法：" + name);
+						var comObj = entity[comPropertyData[2]];
+						if (comObj) {
+							var className = comObj["className"] || comObj["name"];
+							// KBEngine.ERROR_MSG("组件：更新组件属性 moduledefs", KBEngine.moduledefs, "comObj=", comObj);
+							var componentPData = KBEngine.moduledefs[className].propertys[_t_child_utype];
+							var setmethod = componentPData[5];
+							var name = componentPData[2];
+							var flags = componentPData[6];
+							var val = componentPData[4].createFromStream(stream);
+							var oldval = comObj[name];
+							comObj[name] = val;
+							if (setmethod != null) {
+								setmethod.call(comObj, oldval)
+							} else {
+								KBEngine.WARNING_MSG("组件：" + className + "不存在set方法：" + name);
+							}
+						}else {
+							KBEngine.ERROR_MSG("组件:组件实体未找到. entity=", entity, "componentName=", comPropertyData[2]);
 						}
 					}
 				} else {
 					// 暂不明确_t_utype !=0，而_t_child_utype = 0的含义
+					var propertydata1 = pdatas[_t_utype];
+					var propertydata2 = pdatas[_t_child_utype];
+					KBEngine.ERROR_MSG("组件:暂不明确 propertydata1=", propertydata1, "propertydata2=", propertydata2);
 				}
 			} else {
 				// 这里_t_utype==0，是用来更新组件自身属性
@@ -4476,25 +4802,28 @@ KBEngine.KBEngineApp = function(kbengineArgs)
 				if (pdatas[_t_child_utype] !== undefined) {
 					if (pdatas[_t_child_utype][0] >= 1000 && pdatas[_t_child_utype][0] <= 2000) {
 						//尚未处理
+						KBEngine.ERROR_MSG("组件:尚未处理");
 					} else {
 						var propertydata = pdatas[_t_child_utype];
 						var setmethod = propertydata[5];
 						var flags = propertydata[6];
-						var val = propertydata[4].createFromStream(stream);
-						var oldval = entity[propertydata[2]];
-
-						KBEngine.INFO_MSG("KBEngineApp::Client_onUpdatePropertys: " + entity.className + "(id=" + eid + " " + propertydata[2] + ", oldval=", oldval, "val=", val, ")");
-
-						entity[propertydata[2]] = val;
-						if (setmethod != null) {
-							// base类属性或者进入世界后cell类属性会触发set_*方法
-							if (flags == 0x00000020 || flags == 0x00000040) {
-								if (entity.inited)
-									setmethod.call(entity, oldval);
-							}
-							else {
-								if (entity.inWorld)
-									setmethod.call(entity, oldval);
+						if (propertydata[4]) {
+							var val = propertydata[4].createFromStream(stream);
+							var oldval = entity[propertydata[2]];
+	
+							KBEngine.INFO_MSG("KBEngineApp::Client_onUpdatePropertys: " + entity.className + "(id=" + eid + " " + propertydata[2] + ", oldval=", oldval, "val=", val, ")");
+	
+							entity[propertydata[2]] = val;
+							if (setmethod != null) {
+								// base类属性或者进入世界后cell类属性会触发set_*方法
+								if (flags == 0x00000020 || flags == 0x00000040) {
+									if (entity.inited)
+										setmethod.call(entity, oldval);
+								}
+								else {
+									if (entity.inWorld)
+										setmethod.call(entity, oldval);
+								}
 							}
 						}
 					}
