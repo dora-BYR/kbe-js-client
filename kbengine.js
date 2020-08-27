@@ -883,6 +883,11 @@ KBEngine.MemoryStream = function(size_or_buffer)
 		return this.wpos - this.rpos;
 	}
 
+	this.lengthLeft = function()
+	{
+		return this.buffer.byteLength - this.rpos;
+	}
+
 	//---------------------------------------------------------------------------------
 	this.readEOF = function()
 	{
@@ -1666,7 +1671,8 @@ KBEngine.Entity = KBEngine.Class.extend(
 		this.className = "";
 		this.position = new KBEngine.Vector3(0.0, 0.0, 0.0);
 		this.direction = new KBEngine.Vector3(0.0, 0.0, 0.0);
-		this.velocity = 0.0
+		this.velocity = 0.0;
+		this.components = {};
 			
 		this.cell = null;
 		this.base = null;
@@ -1824,8 +1830,7 @@ KBEngine.Entity = KBEngine.Class.extend(
 		}
 		
 		var method = KBEngine.moduledefs[this.className].cell_methods[arguments[0]];
-		KBEngine.ERROR_MSG('KBEngine.Entity::cellCall:info: className=', this.className, "arguments[0]=", arguments[0],
-		"method=", method);
+		// KBEngine.ERROR_MSG('KBEngine.Entity::cellCall:info: className=', this.className, "arguments[0]=", arguments[0],"method=", method);
 		if(method == undefined)
 		{
 			KBEngine.ERROR_MSG("KBEngine.Entity::cellCall: The server did not find the def_method(" + this.className + "." + arguments[0] + ")!");
@@ -1880,6 +1885,12 @@ KBEngine.Entity = KBEngine.Class.extend(
 
 	onEnterWorld : function()
 	{
+		for(let key in this.components){
+			component = this.components[key];
+			if (component && component.onEnterWorld) {
+				component.onEnterWorld();
+			}
+	  	}
 	},
 		
 	leaveWorld : function()
@@ -1892,6 +1903,12 @@ KBEngine.Entity = KBEngine.Class.extend(
 
 	onLeaveWorld : function()
 	{
+		for(let key in this.components){
+			component = this.components[key];
+			if (component && component.onEnterWorld) {
+				component.onLeaveWorld();
+			}
+	  	}
 	},
 		
 	enterSpace : function(spaceId)
@@ -1907,6 +1924,12 @@ KBEngine.Entity = KBEngine.Class.extend(
 
 	onEnterSpace : function(spaceId)
 	{
+		for(let key in this.components){
+			component = this.components[key];
+			if (component && component.onEnterWorld) {
+				component.onEnterSpace(spaceId);
+			}
+	  	}
 	},
 		
 	leaveSpace : function()
@@ -1918,6 +1941,12 @@ KBEngine.Entity = KBEngine.Class.extend(
 
 	onLeaveSpace : function()
 	{
+		for(let key in this.components){
+			component = this.components[key];
+			if (component && component.onEnterWorld) {
+				component.onLeaveSpace();
+			}
+	  	}
 	},
 		
 	set_position : function(old)
@@ -1990,10 +2019,15 @@ KBEngine.Component = KBEngine.Class.extend(
 	onAttached: function(entity) {
 		let saveData = KBEngine.moduledefs[entity.className]["propertys"];
 		saveData = saveData[this.name];
+		if (!saveData) {
+			ERROR_MSG("KBEngine.Component:onAttached: component name error", this.name);
+			return;
+		}
 		this.entityComponentPropertyID = saveData[0]; // 组件id
 		this.owner = entity;
 		this.base = this._getBase();
 		this.cell = this._getCell();
+		entity.components[this.name] = this;
 	},
 
 	onDetached: function() {
@@ -2002,6 +2036,7 @@ KBEngine.Component = KBEngine.Class.extend(
 		this.base = null;
 		this.cell = null;
 		this.name = "";
+		delete entity.components[this.name];
 	},
 
 	_getBase() {
@@ -2432,6 +2467,10 @@ KBEngine.DATATYPE_UINT64 = function()
 	{
 		return v instanceof KBEngine.UINT64 || typeof v == "number";
 	}
+
+	this.bind = function()
+	{
+	}
 }
 
 KBEngine.DATATYPE_INT8 = function()
@@ -2568,7 +2607,7 @@ KBEngine.DATATYPE_INT64 = function()
 	
 	this.isSameType = function(v)
 	{
-		return v instanceof KBEngine.INT64;
+		return (typeof(v) == "number") || (v instanceof KBEngine.INT64);
 	}
 }
 
@@ -4642,6 +4681,11 @@ KBEngine.KBEngineApp = function(kbengineArgs)
 			entity.base.type = KBEngine.ENTITYCALL_TYPE_BASE;
 			
 			KBEngine.app.entities[eid] = entity;
+
+			//组件适配：设置组件
+			if (entity.attachComponents) {
+				entity.attachComponents(KBEngine.moduledefs[entity.className])
+			}
 			
 			var entityMessage = KBEngine.bufferedCreateEntityMessages[eid];
 			if(entityMessage != undefined)
@@ -4656,10 +4700,10 @@ KBEngine.KBEngineApp = function(kbengineArgs)
 			if(KBEngine.app.args.isOnInitCallPropertysSetMethods) {
 				entity.callPropertysSetMethods();
 			}
-			//组件适配：设置组件
-			if (entity.attachComponents) {
-				entity.attachComponents(KBEngine.moduledefs[entity.className])
-			}
+			// //组件适配：设置组件
+			// if (entity.attachComponents) {
+			// 	entity.attachComponents(KBEngine.moduledefs[entity.className])
+			// }
 		}
 		else
 		{
@@ -4754,16 +4798,34 @@ KBEngine.KBEngineApp = function(kbengineArgs)
 		var currModule = KBEngine.moduledefs[entity.className];
 		var pdatas = currModule.propertys;
 		var _t_utype = 0;
-		//适配组件：更新实体属性、组件属性
-		while (stream.length() > 0) {
+		//适配组件：更新实体属性、组件属性。如果遇到报错有可能是客户端实体或组件未实现
+		let streamLength = stream.length();
+		let lengthLeft = stream.lengthLeft();
+		while (streamLength > 0) {
+			// KBEngine.ERROR_MSG("stream流长度", streamLength, lengthLeft, stream.byteLength, stream.buffer.byteLength, stream.rpos);
+			if (stream.readEOF()) {
+				// KBEngine.ERROR_MSG("stream流有问题：长度=", streamLength, ", 但不可读了");
+				break;
+			}
 			var _t_child_utype = 0;
+			// KBEngine.ERROR_MSG("组件：更新组件属性stream.length=",streamLength, currModule.usePropertyDescrAlias);
 			if (currModule.usePropertyDescrAlias) {
-				_t_utype = stream.readUint8();
-				_t_child_utype = stream.readUint8();
+				if (lengthLeft >= 2) {
+					_t_utype = stream.readUint8();
+					_t_child_utype = stream.readUint8();
+				}else {
+					KBEngine.ERROR_MSG("stream流剩余长度有问题非偶数, lengthLeft = ", lengthLeft);
+					break;
+				}
 			}
 			else {
-				_t_utype = stream.readUint16();
-				_t_child_utype = stream.readUint16();
+				if (lengthLeft >= 4) {
+					_t_utype = stream.readUint16();
+					_t_child_utype = stream.readUint16();
+				}else {
+					KBEngine.ERROR_MSG("stream流剩余长度有问题非偶数, lengthLeft = ", lengthLeft);
+					break;
+				}
 			}
 			if (_t_utype != 0) {
 				if (_t_child_utype != 0) {
@@ -4771,30 +4833,32 @@ KBEngine.KBEngineApp = function(kbengineArgs)
 					var comPropertyData = pdatas[_t_utype];
 					if (comPropertyData !== undefined) {
 						var comObj = entity[comPropertyData[2]];
-						if (comObj) {
+						if (comObj && typeof comObj == "object") {
 							var className = comObj["className"] || comObj["name"];
-							// KBEngine.ERROR_MSG("组件：更新组件属性 moduledefs", KBEngine.moduledefs, "comObj=", comObj);
+							// KBEngine.ERROR_MSG("组件：更新组件属性 moduledefs","comObj=", comObj, "className=", className, "comPropertyData[2]=", comPropertyData[2]);
 							var componentPData = KBEngine.moduledefs[className].propertys[_t_child_utype];
-							var setmethod = componentPData[5];
-							var name = componentPData[2];
-							var flags = componentPData[6];
-							var val = componentPData[4].createFromStream(stream);
-							var oldval = comObj[name];
-							comObj[name] = val;
-							if (setmethod != null) {
-								setmethod.call(comObj, oldval)
-							} else {
-								KBEngine.WARNING_MSG("组件：" + className + "不存在set方法：" + name);
+							if (componentPData) {
+								var setmethod = componentPData[5];
+								var name = componentPData[2];
+								var flags = componentPData[6];
+								var val = componentPData[4].createFromStream(stream);
+								var oldval = comObj[name];
+								comObj[name] = val;
+								if (setmethod != null) {
+									setmethod.call(comObj, oldval)
+								} else {
+									KBEngine.WARNING_MSG("组件：" + className + "不存在set方法：" + name);
+								}
 							}
 						}else {
 							KBEngine.ERROR_MSG("组件:组件实体未找到. entity=", entity, "componentName=", comPropertyData[2]);
 						}
 					}
 				} else {
-					// 暂不明确_t_utype !=0，而_t_child_utype = 0的含义
-					var propertydata1 = pdatas[_t_utype];
-					var propertydata2 = pdatas[_t_child_utype];
-					KBEngine.ERROR_MSG("组件:暂不明确 propertydata1=", propertydata1, "propertydata2=", propertydata2);
+					// // 暂不明确_t_utype !=0，而_t_child_utype = 0的含义
+					// var propertydata1 = pdatas[_t_utype];
+					// var propertydata2 = pdatas[_t_child_utype];
+					// KBEngine.ERROR_MSG("组件:暂不明确 propertydata1=", propertydata1, "propertydata2=", propertydata2);
 				}
 			} else {
 				// 这里_t_utype==0，是用来更新组件自身属性
@@ -4829,6 +4893,9 @@ KBEngine.KBEngineApp = function(kbengineArgs)
 					}
 				}
 			}
+			//
+			streamLength = stream.length();
+			lengthLeft = stream.lengthLeft();
 		}
 	}
 
@@ -4895,14 +4962,18 @@ KBEngine.KBEngineApp = function(kbengineArgs)
 			//实体组件方法
 			var comName = KBEngine.moduledefs[entity.className].propertys[propertyUtype][2]
 			var comObj = entity[comName]
-			var methoddata = KBEngine.moduledefs[comObj.className].methods[methodUtype]
-			if (comObj[methoddata[2]] != null) {
-				var args = [];
-				var argsdata = methoddata[3];
-				for (var i = 0; i < argsdata.length; i++) {
-					args.push(argsdata[i].createFromStream(stream));
+			if (comObj) {
+				var methoddata = KBEngine.moduledefs[comObj.className].methods[methodUtype]
+				if (comObj[methoddata[2]] != null) {
+					var args = [];
+					var argsdata = methoddata[3];
+					for (var i = 0; i < argsdata.length; i++) {
+						args.push(argsdata[i].createFromStream(stream));
+					}
+					comObj[methoddata[2]].apply(comObj, args)
 				}
-				comObj[methoddata[2]].apply(comObj, args)
+			}else {
+				KBEngine.WARNING_MSG("实体未找到组件: 实体id", entity.id, ",组件名=", comName);
 			}
 		}
 	}
@@ -5278,22 +5349,23 @@ KBEngine.KBEngineApp = function(kbengineArgs)
 		if(!isAll)
 		{
 			var entity = KBEngine.app.player();
-			
-			for (var eid in KBEngine.app.entities)  
-			{ 
-				if(eid == entity.id)
-					continue;
-				
-				if(KBEngine.app.entities[eid].inWorld)
-				{
-			    	KBEngine.app.entities[eid].leaveWorld();
-			    }
-			    
-			    KBEngine.app.entities[eid].onDestroy();
-			}  
-				
-			KBEngine.app.entities = {}
-			KBEngine.app.entities[entity.id] = entity;
+			if (entity) {
+				for (var eid in KBEngine.app.entities)  
+				{ 
+					if(eid == entity.id)
+						continue;
+					
+					if(KBEngine.app.entities[eid].inWorld)
+					{
+						KBEngine.app.entities[eid].leaveWorld();
+					}
+					
+					KBEngine.app.entities[eid].onDestroy();
+				}  
+					
+				KBEngine.app.entities = {}
+				KBEngine.app.entities[entity.id] = entity;
+			}
 		}
 		else
 		{
